@@ -9,7 +9,9 @@ import { getFaqCsv } from '@/lib/sheet';
 
 // ต้องเป็น nodejs ไม่ใช่ edge — validateSignature ใช้ crypto ของ node
 export const runtime = 'nodejs';
-export const maxDuration = 15;
+// เผื่อไว้: ดึง Sheet (สูงสุด 5 วิ) + เรียก Gemini (สูงสุด 8 วิ) + ส่งข้อความกลับ
+// ยิ่งเพิ่มแผ่นใน Sheet prompt ยิ่งใหญ่ Gemini ก็ใช้เวลานานขึ้น
+export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
 
 type LineTextEvent = {

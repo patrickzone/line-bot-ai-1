@@ -1,8 +1,9 @@
 /**
- * ดึง FAQ จาก Google Sheet (published CSV) + cache
+ * ดึง FAQ จาก Google Sheet (published CSV) ทุกแผ่น + cache
  *
- * schema ที่ Sheet ต้องมี (แถวแรกเป็นหัวตาราง):
- *   A category | B question | C answer | D keywords
+ * สเปรดชีตมีหลายแผ่น (tab) แต่ลิงก์ pub?output=csv จะได้มาแค่แผ่นแรกแผ่นเดียว
+ * ไฟล์นี้จึงอ่านรายชื่อแผ่นทั้งหมดจากหน้า pubhtml แล้วดึงมาต่อกันให้ครบ
+ * สร้างแผ่นใหม่เพิ่มเมื่อไหร่ก็ถูกดึงมาเองโดยไม่ต้องแก้โค้ดหรือแก้ env
  *
  * 1 แถว = 1 เรื่อง · ไม่อยากให้บอทตอบเรื่องไหน ลบแถวนั้นออก
  */
@@ -25,9 +26,64 @@ export type FaqResult = {
   stale: boolean;
 };
 
+function looksLikeHtml(text: string): boolean {
+  return /^\s*<(!doctype|html)/i.test(text);
+}
+
+async function fetchText(url: string, signal: AbortSignal): Promise<string> {
+  const res = await fetch(url, { signal, cache: 'no-store' });
+  if (!res.ok) {
+    // 401/403 = ชีตยังเป็นส่วนตัว · 404 = URL ผิดหรือยังไม่ได้ publish
+    const hint =
+      res.status === 401 || res.status === 403
+        ? ' (ชีตยังไม่เปิดสิทธิ์ให้คนนอกอ่าน)'
+        : res.status === 404
+          ? ' (URL ผิด หรือชีตยังไม่ได้ publish)'
+          : '';
+    throw new Error(`HTTP ${res.status}${hint}`);
+  }
+  return (await res.text()).trim();
+}
+
 /**
- * คืน CSV ดิบ ๆ ทั้งก้อนให้ Gemini อ่านเอง
- * ไม่ต้อง parse เป็น object เพราะโมเดลอ่าน CSV ได้อยู่แล้ว
+ * แยกส่วนหน้าของลิงก์ publish ออกมา
+ * เช่น https://docs.google.com/spreadsheets/d/e/2PACX-xxx/pub?output=csv
+ *   -> https://docs.google.com/spreadsheets/d/e/2PACX-xxx
+ * คืน null ถ้าไม่ใช่ลิงก์ publish รูปแบบนี้ (จะได้ข้ามการค้นหาแผ่นไป)
+ */
+function publishedBaseUrl(url: string): string | null {
+  const m = url.match(/^(https:\/\/docs\.google\.com\/spreadsheets\/d\/e\/[^/]+)\/pub/);
+  return m ? m[1] : null;
+}
+
+/**
+ * อ่านรายชื่อแผ่นทั้งหมดจากหน้า pubhtml
+ * หน้านั้นฝัง javascript ไว้เป็นชุด items.push({name: "...", ... gid: "..."})
+ */
+async function discoverTabs(
+  base: string,
+  signal: AbortSignal,
+): Promise<Array<{ name: string; gid: string }>> {
+  const html = await fetchText(`${base}/pubhtml`, signal);
+  const tabs: Array<{ name: string; gid: string }> = [];
+  const seen = new Set<string>();
+
+  for (const m of html.matchAll(/items\.push\(\{name:\s*"((?:[^"\\]|\\.)*)"[\s\S]*?gid:\s*"(\d+)"/g)) {
+    const gid = m[2];
+    if (seen.has(gid)) continue;
+    seen.add(gid);
+    const name = m[1]
+      .replace(/\\x26/g, '&')
+      .replace(/\\\//g, '/')
+      .replace(/\\"/g, '"');
+    tabs.push({ name, gid });
+  }
+  return tabs;
+}
+
+/**
+ * คืน CSV ของทุกแผ่นต่อกัน พร้อมหัวข้อบอกว่าแต่ละก้อนมาจากแผ่นไหน
+ * ไม่ parse เป็น object เพราะโมเดลอ่าน CSV ได้อยู่แล้ว
  * และการส่งทั้งตารางทำให้มันเลือกแถวที่ตรงคำถามได้ดีกว่าเรา filter เอง
  */
 export async function getFaqCsv(): Promise<FaqResult> {
@@ -43,35 +99,50 @@ export async function getFaqCsv(): Promise<FaqResult> {
     return { csv: cache.csv, stale: false };
   }
 
+  // deadline เดียวคุมทั้งงาน ทั้งหา pubhtml และดึง csv ทุกแผ่น
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SHEET_TIMEOUT_MS);
 
   try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      // ต้อง bypass cache ของ Next ไม่งั้นแก้ Sheet แล้วไม่อัปเดต
-      cache: 'no-store',
-    });
+    const base = publishedBaseUrl(url);
+    let csv: string;
 
-    if (!res.ok) {
-      // 401/403 = ชีตยังเป็นส่วนตัว · 404 = URL ผิดหรือยังไม่ได้ publish
-      const hint =
-        res.status === 401 || res.status === 403
-          ? ' (ชีตยังไม่เปิดสิทธิ์ให้คนนอกอ่าน)'
-          : res.status === 404
-            ? ' (URL ผิด หรือชีตยังไม่ได้ publish)'
-            : '';
-      throw new Error(`HTTP ${res.status}${hint}`);
+    if (base) {
+      const tabs = await discoverTabs(base, controller.signal);
+
+      if (tabs.length === 0) {
+        // หาแผ่นไม่เจอ ถอยไปใช้ลิงก์ที่ตั้งไว้ตรง ๆ
+        console.warn('[sheet] อ่านรายชื่อแผ่นไม่ได้ ใช้ลิงก์เดิมแผ่นเดียว');
+        csv = await fetchText(url, controller.signal);
+      } else {
+        const parts = await Promise.all(
+          tabs.map(async (tab) => {
+            const text = await fetchText(
+              `${base}/pub?gid=${tab.gid}&single=true&output=csv`,
+              controller.signal,
+            );
+            return `### แผ่น: ${tab.name}\n${text}`;
+          }),
+        );
+        csv = parts.join('\n\n');
+        // ดูขนาดไว้ด้วย ยิ่งเพิ่มแผ่น prompt ยิ่งใหญ่ ค่าใช้จ่ายและเวลาตอบก็เพิ่มตาม
+        console.log(
+          `[sheet] ดึงครบ ${tabs.length} แผ่น (${Math.round(csv.length / 1024)} KB): ` +
+            tabs.map((t) => t.name).join(', '),
+        );
+      }
+    } else {
+      // ไม่ใช่ลิงก์ publish (เช่น export?format=csv) ดึงตรง ๆ แผ่นเดียว
+      csv = await fetchText(url, controller.signal);
     }
 
-    const csv = (await res.text()).trim();
     if (!csv) {
       throw new Error('CSV ว่างเปล่า');
     }
 
     // ถ้าใส่ลิงก์ /edit จาก address bar จะได้หน้าเว็บ HTML กลับมา ไม่ใช่ข้อมูล
     // ต้องดักไว้ ไม่งั้นจะ cache HTML ไว้แล้วส่งให้ Gemini อ่านเป็น FAQ
-    if (/^\s*<(!doctype|html)/i.test(csv)) {
+    if (looksLikeHtml(csv)) {
       throw new Error(
         'ได้ HTML ไม่ใช่ CSV — ต้องใช้ลิงก์ที่ลงท้ายด้วย output=csv หรือ export?format=csv',
       );
