@@ -31,9 +31,10 @@ export type FaqResult = {
  * และการส่งทั้งตารางทำให้มันเลือกแถวที่ตรงคำถามได้ดีกว่าเรา filter เอง
  */
 export async function getFaqCsv(): Promise<FaqResult> {
-  const url = process.env.FAQ_SHEET_CSV_URL;
+  // รับได้ 2 ชื่อ กันพลาดเรื่องตั้งชื่อ env ไม่ตรงกับที่โค้ดอ่าน
+  const url = process.env.FAQ_SHEET_CSV_URL || process.env.SHEET_CSV_URL;
   if (!url) {
-    console.error('[sheet] FAQ_SHEET_CSV_URL ไม่ได้ตั้งค่า');
+    console.error('[sheet] ไม่ได้ตั้งค่า FAQ_SHEET_CSV_URL (หรือ SHEET_CSV_URL)');
     return { csv: null, stale: false };
   }
 
@@ -53,12 +54,27 @@ export async function getFaqCsv(): Promise<FaqResult> {
     });
 
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
+      // 401/403 = ชีตยังเป็นส่วนตัว · 404 = URL ผิดหรือยังไม่ได้ publish
+      const hint =
+        res.status === 401 || res.status === 403
+          ? ' (ชีตยังไม่เปิดสิทธิ์ให้คนนอกอ่าน)'
+          : res.status === 404
+            ? ' (URL ผิด หรือชีตยังไม่ได้ publish)'
+            : '';
+      throw new Error(`HTTP ${res.status}${hint}`);
     }
 
     const csv = (await res.text()).trim();
     if (!csv) {
       throw new Error('CSV ว่างเปล่า');
+    }
+
+    // ถ้าใส่ลิงก์ /edit จาก address bar จะได้หน้าเว็บ HTML กลับมา ไม่ใช่ข้อมูล
+    // ต้องดักไว้ ไม่งั้นจะ cache HTML ไว้แล้วส่งให้ Gemini อ่านเป็น FAQ
+    if (/^\s*<(!doctype|html)/i.test(csv)) {
+      throw new Error(
+        'ได้ HTML ไม่ใช่ CSV — ต้องใช้ลิงก์ที่ลงท้ายด้วย output=csv หรือ export?format=csv',
+      );
     }
 
     cache = { csv, fetchedAt: now };
