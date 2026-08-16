@@ -31,7 +31,7 @@ export const DEFAULT_REPLY_OUT_OF_HOURS =
 // ── โมเดล ────────────────────────────────────────────────────
 // ถ้ายิงจริงแล้วขึ้น 404 model not found ให้แก้ชื่อรุ่นที่บรรทัดนี้บรรทัดเดียว
 // (หรือ set env GEMINI_MODEL เพื่อ override โดยไม่ต้องแก้โค้ด)
-export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 
 /** ต่ำ = ตอบตาม FAQ ตรง ๆ ไม่ค่อยแต่งเอง */
 export const GEMINI_TEMPERATURE = 0.2;

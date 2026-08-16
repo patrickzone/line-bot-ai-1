@@ -85,5 +85,7 @@ log ทุก request: `finishReason` · `thoughtsTokenCount` · `candidatesToke
 
 ## หมายเหตุเรื่องชื่อรุ่น
 
-`GEMINI_MODEL` ตั้งไว้ที่ `gemini-3.5-flash` ถ้ายิงจริงแล้วขึ้น **404 model not found**
+`GEMINI_MODEL` ตั้งไว้ที่ `gemini-3.5-flash-lite` ถ้ายิงจริงแล้วขึ้น **404 model not found**
 แก้ที่ [lib/config.ts](lib/config.ts) บรรทัดเดียว หรือ set env `GEMINI_MODEL` ทับได้เลย
+
+ดูรายชื่อรุ่นที่ API key ใช้ได้จริงทั้งหมดได้จาก `/api/diag` (ช่อง `availableModels`)
