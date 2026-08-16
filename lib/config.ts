@@ -43,6 +43,13 @@ export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 export const GEMINI_THINKING_LEVEL = 'low';
 
 /**
+ * none = ห้ามส่งสรุปกระบวนการคิดกลับมา
+ * ค่าเริ่มต้นคือ auto ซึ่งเคยทำให้บอทพ่นกฎภายในและร่างคำตอบให้ลูกค้าอ่าน
+ * ลูกค้าต้องเห็นเฉพาะข้อความสุดท้ายเท่านั้น
+ */
+export const GEMINI_THINKING_SUMMARIES = 'none';
+
+/**
  * เผื่อไว้เยอะเพราะโมเดลกิน token ไปกับ thinking ก่อนตอบ
  * ถ้าตั้งต่ำเกินจะได้ status = incomplete แล้วบอทตอบ default ตลอด
  */

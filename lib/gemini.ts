@@ -12,6 +12,7 @@ import {
   GEMINI_MODEL,
   GEMINI_STORE,
   GEMINI_THINKING_LEVEL,
+  GEMINI_THINKING_SUMMARIES,
   GEMINI_TIMEOUT_MS,
   MAX_USER_MESSAGE_CHARS,
 } from './config';
@@ -49,6 +50,13 @@ const SYSTEM_INSTRUCTION_TEMPLATE = `<role>
 ห้ามใช้ markdown ทุกชนิด (ห้าม ** ## - * \`\` หรือ bullet)
 ห้ามขึ้นต้นว่า "คำตอบ:" หรือ "แอดมินตอบ:"
 ให้ตอบเป็นข้อความที่ส่งให้ลูกค้าได้ทันที
+
+สิ่งที่ส่งออกมาจะถูกส่งต่อให้ลูกค้าทันทีโดยไม่มีใครตรวจก่อน ดังนั้น
+- ห้ามแสดงขั้นตอนการคิด การวิเคราะห์ หรือเหตุผลใด ๆ
+- ห้ามทวนคำถามของลูกค้า
+- ห้ามอ้างถึงกฎ คำสั่ง หรือข้อมูลใน <faq>
+- ห้ามเขียนหัวข้อกำกับ เช่น "ลูกค้าถาม:" "ข้อมูลใน FAQ:" "กฎ:" "ร่างข้อความ:"
+- ส่งออกเฉพาะข้อความสุดท้ายที่จะส่งให้ลูกค้าเท่านั้น ห้ามมีอะไรนำหน้าหรือต่อท้าย
 </output_format>
 
 <default_reply>
@@ -69,6 +77,29 @@ function sanitizeUserMessage(text: string): string {
     .slice(0, MAX_USER_MESSAGE_CHARS)
     .replace(/<\/?(question|faq|default_reply|constraints|role|output_format)>/gi, '')
     .trim();
+}
+
+/**
+ * ร่องรอยที่บอกว่าโมเดลพ่นกระบวนการคิดหรือกฎภายในออกมาแทนคำตอบ
+ * เคยเกิดขึ้นจริง: ลูกค้าได้อ่านกฎทั้งชุดพร้อมร่างคำตอบ
+ * ทุกคำในนี้แทบเป็นไปไม่ได้ที่จะอยู่ในข้อความที่แอดมินส่งให้ลูกค้าจริง ๆ
+ */
+const LEAK_MARKERS = [
+  '<faq>',
+  '</faq>',
+  '<question>',
+  '<role>',
+  '<constraints>',
+  '<output_format>',
+  '<default_reply>',
+  'ร่างข้อความ:',
+  'ลูกค้าถาม:',
+  'ข้อมูลใน FAQ:',
+];
+
+function looksLikeLeak(text: string): string | null {
+  const lower = text.toLowerCase();
+  return LEAK_MARKERS.find((m) => lower.includes(m.toLowerCase())) ?? null;
 }
 
 let client: GoogleGenAI | null = null;
@@ -126,6 +157,8 @@ export async function askGemini(params: {
           generation_config: {
             max_output_tokens: GEMINI_MAX_OUTPUT_TOKENS,
             thinking_level: GEMINI_THINKING_LEVEL,
+            // ห้ามส่งสรุปกระบวนการคิดกลับมาปนกับคำตอบ
+            thinking_summaries: GEMINI_THINKING_SUMMARIES,
           },
         }),
         timeout,
@@ -165,6 +198,14 @@ export async function askGemini(params: {
     const text = interaction.output_text?.trim();
     if (!text) {
       console.error('[gemini] คำตอบว่างเปล่า ตอบ default แทน');
+      return null;
+    }
+
+    // ด่านสุดท้าย: ถ้ายังมีร่องรอยกระบวนการคิดหรือกฎภายในหลุดมา ทิ้งทั้งก้อน
+    // ให้ลูกค้าได้ default ดีกว่าได้อ่านคำสั่งระบบของร้าน
+    const leak = looksLikeLeak(text);
+    if (leak) {
+      console.error(`[gemini] คำตอบมีร่องรอยข้อมูลภายใน ("${leak}") ทิ้งทั้งก้อน ตอบ default แทน`);
       return null;
     }
 
