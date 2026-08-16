@@ -10,7 +10,13 @@
  * ลบไฟล์นี้ทิ้งได้เมื่อแก้ปัญหาจบแล้ว
  */
 
-import { GEMINI_MODEL, isWithinBusinessHours } from '@/lib/config';
+import { GoogleGenAI } from '@google/genai';
+import {
+  GEMINI_MODEL,
+  GEMINI_STORE,
+  GEMINI_THINKING_LEVEL,
+  isWithinBusinessHours,
+} from '@/lib/config';
 import { getFaqCsv } from '@/lib/sheet';
 
 export const runtime = 'nodejs';
@@ -89,64 +95,42 @@ export async function GET(req: Request) {
     sheet = { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 
-  // 3) ชื่อรุ่นที่ตั้งไว้ ใช้ได้จริงไหม + มีรุ่นอะไรให้เลือกบ้าง
-  let gemini: Record<string, unknown> = { ok: false, reason: 'ไม่ได้ทดสอบ' };
+  // 3) ยิง Gemini จริงด้วย SDK และรุ่นเดียวกับที่บอทใช้ ผลตรวจจะได้ตรงกับของจริง
+  let gemini: Record<string, unknown>;
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     gemini = { ok: false, reason: 'GEMINI_API_KEY ไม่ได้ตั้งค่า' };
   } else {
-    // ยิงคำถามสั้น ๆ ด้วยชื่อรุ่นที่ตั้งไว้ เพื่อดูว่า 404 ไหม
-    let callResult: Record<string, unknown>;
     try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-          GEMINI_MODEL,
-        )}:generateContent`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
-          body: JSON.stringify({ contents: [{ parts: [{ text: 'ตอบว่า ok' }] }] }),
-        },
-      );
-      const body = (await res.json()) as { error?: { message?: string } };
-      callResult = res.ok
-        ? { ok: true, status: res.status }
-        : {
-            ok: false,
-            status: res.status,
-            message: body?.error?.message ?? 'ไม่ทราบสาเหตุ',
-            hint:
-              res.status === 404
-                ? `ไม่มีรุ่นชื่อ "${GEMINI_MODEL}" — เลือกจาก availableModels ด้านล่างแล้วแก้ GEMINI_MODEL`
-                : res.status === 429
-                  ? 'โควต้าเต็ม'
-                  : res.status === 403 || res.status === 400
-                    ? 'API key อาจไม่ถูกต้องหรือไม่ได้เปิดสิทธิ์'
-                    : undefined,
-          };
-    } catch (err) {
-      callResult = { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-
-    // ดึงรายชื่อรุ่นที่ key นี้ใช้ได้จริง จะได้ไม่ต้องเดาชื่อ
-    let availableModels: string[] | string;
-    try {
-      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
-        headers: { 'x-goog-api-key': apiKey },
+      const ai = new GoogleGenAI({ apiKey });
+      const interaction = await ai.interactions.create({
+        model: GEMINI_MODEL,
+        input: 'ตอบกลับด้วยคำว่า ok เท่านั้น',
+        store: GEMINI_STORE,
+        generation_config: { thinking_level: GEMINI_THINKING_LEVEL },
       });
-      const body = (await res.json()) as {
-        models?: Array<{ name?: string; supportedGenerationMethods?: string[] }>;
+      gemini = {
+        ok: interaction.status === 'completed',
+        configuredModel: GEMINI_MODEL,
+        status: interaction.status,
+        replyPreview: interaction.output_text?.slice(0, 40) ?? null,
+        errors: interaction.errors?.map((e) => e.message) ?? null,
       };
-      availableModels =
-        body.models
-          ?.filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
-          .map((m) => (m.name ?? '').replace(/^models\//, ''))
-          .filter(Boolean) ?? [];
     } catch (err) {
-      availableModels = `ดึงรายชื่อรุ่นไม่ได้: ${err instanceof Error ? err.message : String(err)}`;
+      const message = err instanceof Error ? err.message : String(err);
+      gemini = {
+        ok: false,
+        configuredModel: GEMINI_MODEL,
+        error: message,
+        hint: /404|not found/i.test(message)
+          ? `ไม่มีรุ่นชื่อ "${GEMINI_MODEL}" — แก้ GEMINI_MODEL ใน lib/config.ts`
+          : /429|quota|exceeded/i.test(message)
+            ? 'โควต้าเต็ม'
+            : /401|403|API key/i.test(message)
+              ? 'API key ไม่ถูกต้องหรือยังไม่ได้เปิดสิทธิ์'
+              : undefined,
+      };
     }
-
-    gemini = { configuredModel: GEMINI_MODEL, call: callResult, availableModels };
   }
 
   return Response.json(

@@ -1,5 +1,5 @@
 /**
- * ประกอบ prompt · เรียก Gemini · log · กัน MAX_TOKENS
+ * ประกอบ prompt · เรียก Gemini (Interactions API) · log · กันคำตอบไม่สมบูรณ์
  *
  * หลักการ: ฟังก์ชันนี้ "ไม่เคย throw"
  * ถ้าอะไรพังจะคืน null แล้วให้ฝั่ง route ตอบ default reply แทน
@@ -10,12 +10,17 @@ import { GoogleGenAI } from '@google/genai';
 import {
   GEMINI_MAX_OUTPUT_TOKENS,
   GEMINI_MODEL,
-  GEMINI_TEMPERATURE,
+  GEMINI_STORE,
+  GEMINI_THINKING_LEVEL,
   GEMINI_TIMEOUT_MS,
   MAX_USER_MESSAGE_CHARS,
 } from './config';
 
-const PROMPT_TEMPLATE = `<role>
+/**
+ * กฎทั้งหมดอยู่ใน system_instruction ส่วนคำพูดลูกค้าส่งแยกเป็น input
+ * การแยกแบบนี้ทำให้ลูกค้าสั่งเปลี่ยนบทบาทได้ยากกว่าการยัดรวมเป็นก้อนเดียว
+ */
+const SYSTEM_INSTRUCTION_TEMPLATE = `<role>
 คุณคือแอดมินร้าน "Keep Me Around" ร้านขายเสื้อผ้า เครื่องสำอางแบรนด์ "Keep"
 และอุปกรณ์เสริมความงามสำหรับผู้หญิง
 คุณกำลังตอบแชท LINE ของลูกค้าแทนแอดมินตัวจริง
@@ -52,15 +57,11 @@ const PROMPT_TEMPLATE = `<role>
 
 <faq>
 {{FAQ_CSV}}
-</faq>
-
-<question>
-{{USER_MESSAGE}}
-</question>`;
+</faq>`;
 
 /**
  * ตัดความยาว + ถอดแท็กที่อาจใช้ปิด <question> ก่อนกำหนด
- * prompt ใน constraints กันการสั่งเปลี่ยนบทบาทอยู่แล้ว
+ * system_instruction กันการสั่งเปลี่ยนบทบาทอยู่แล้ว
  * ตรงนี้กันอีกชั้นไม่ให้ลูกค้าแทรกแท็กปลอมจนโครง prompt เพี้ยน
  */
 function sanitizeUserMessage(text: string): string {
@@ -95,15 +96,17 @@ export async function askGemini(params: {
   const ai = getClient();
   if (!ai) return null;
 
-  const prompt = PROMPT_TEMPLATE.replace('{{DEFAULT_REPLY}}', params.defaultReply)
-    .replace('{{FAQ_CSV}}', params.faqCsv)
-    .replace('{{USER_MESSAGE}}', sanitizeUserMessage(params.userMessage));
+  const systemInstruction = SYSTEM_INSTRUCTION_TEMPLATE.replace(
+    '{{DEFAULT_REPLY}}',
+    params.defaultReply,
+  ).replace('{{FAQ_CSV}}', params.faqCsv);
+
+  const input = `<question>\n${sanitizeUserMessage(params.userMessage)}\n</question>`;
 
   const startedAt = Date.now();
 
   try {
-    // race กับ timer แทนการพึ่ง abortSignal ของ SDK
-    // เพราะต้องการันตีว่า route ไม่ค้างเกิน GEMINI_TIMEOUT_MS ไม่ว่า SDK จะรองรับหรือไม่
+    // race กับ timer เพื่อการันตีว่า route ไม่ค้างเกิน GEMINI_TIMEOUT_MS
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(
@@ -112,15 +115,17 @@ export async function askGemini(params: {
       );
     });
 
-    let response;
+    let interaction;
     try {
-      response = await Promise.race([
-        ai.models.generateContent({
+      interaction = await Promise.race([
+        ai.interactions.create({
           model: GEMINI_MODEL,
-          contents: prompt,
-          config: {
-            temperature: GEMINI_TEMPERATURE,
-            maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS,
+          system_instruction: systemInstruction,
+          input,
+          store: GEMINI_STORE,
+          generation_config: {
+            max_output_tokens: GEMINI_MAX_OUTPUT_TOKENS,
+            thinking_level: GEMINI_THINKING_LEVEL,
           },
         }),
         timeout,
@@ -129,8 +134,7 @@ export async function askGemini(params: {
       if (timer) clearTimeout(timer);
     }
 
-    const finishReason = response.candidates?.[0]?.finishReason;
-    const usage = response.usageMetadata;
+    const usage = interaction.usage;
     const latencyMs = Date.now() - startedAt;
 
     // log ทุก request — ห้าม log ข้อความลูกค้าหรือ userId จริงตรงนี้
@@ -138,28 +142,27 @@ export async function askGemini(params: {
       JSON.stringify({
         tag: 'gemini',
         model: GEMINI_MODEL,
-        finishReason: finishReason ?? null,
-        thoughtsTokenCount: usage?.thoughtsTokenCount ?? null,
-        candidatesTokenCount: usage?.candidatesTokenCount ?? null,
-        promptTokenCount: usage?.promptTokenCount ?? null,
+        status: interaction.status,
+        thoughtTokens: usage?.total_thought_tokens ?? null,
+        outputTokens: usage?.total_output_tokens ?? null,
+        inputTokens: usage?.total_input_tokens ?? null,
         latencyMs,
       }),
     );
 
-    // โดนตัดกลางคัน = คำตอบไม่ครบ ทิ้งทั้งก้อน
-    // ส่งครึ่งท่อนให้ลูกค้าอันตรายกว่าตอบ default (เช่น ราคาขาดหลัก)
-    if (String(finishReason) === 'MAX_TOKENS') {
-      console.error('[gemini] finishReason = MAX_TOKENS ทิ้งคำตอบ ตอบ default แทน');
+    // completed เท่านั้นที่ถือว่าจบสมบูรณ์
+    // incomplete = โดนตัดกลางคัน (ตัวแทนของ MAX_TOKENS เดิม)
+    // budget_exceeded = โควต้าหมด · failed/cancelled = พังระหว่างทาง
+    // ส่งคำตอบครึ่งท่อนให้ลูกค้าอันตรายกว่าตอบ default (เช่น ราคาขาดหลัก)
+    if (interaction.status !== 'completed') {
+      const detail = interaction.errors?.map((e) => e.message).filter(Boolean).join(' | ');
+      console.error(
+        `[gemini] status = ${interaction.status} ตอบ default แทน${detail ? ': ' + detail : ''}`,
+      );
       return null;
     }
 
-    // STOP เท่านั้นที่ถือว่าจบสมบูรณ์ อย่างอื่น (SAFETY, RECITATION, ...) ไม่เอา
-    if (finishReason && String(finishReason) !== 'STOP') {
-      console.error(`[gemini] finishReason = ${finishReason} ตอบ default แทน`);
-      return null;
-    }
-
-    const text = response.text?.trim();
+    const text = interaction.output_text?.trim();
     if (!text) {
       console.error('[gemini] คำตอบว่างเปล่า ตอบ default แทน');
       return null;

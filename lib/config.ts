@@ -33,14 +33,27 @@ export const DEFAULT_REPLY_OUT_OF_HOURS =
 // (หรือ set env GEMINI_MODEL เพื่อ override โดยไม่ต้องแก้โค้ด)
 export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 
-/** ต่ำ = ตอบตาม FAQ ตรง ๆ ไม่ค่อยแต่งเอง */
-export const GEMINI_TEMPERATURE = 0.2;
+/**
+ * ไม่มี temperature / top_p / top_k อีกแล้ว
+ * Google ถอดพารามิเตอร์กลุ่มนี้ออกจากรุ่น 3.5/3.7 (ยืนยันจาก type GenerationConfig ของ SDK 2.x)
+ * ถ้าใส่เข้าไปจะ error — คุมโทนคำตอบด้วย prompt ใน lib/gemini.ts แทน
+ */
+
+/** ระดับการคิดก่อนตอบ: minimal | low | medium | high — งาน FAQ ใช้ low พอ เร็วและถูก */
+export const GEMINI_THINKING_LEVEL = 'low';
 
 /**
- * เผื่อไว้เยอะเพราะบางรุ่นกิน token ไปกับ thinking ก่อนตอบ
- * ถ้าตั้งต่ำเกินจะโดน finishReason = MAX_TOKENS แล้วบอทตอบ default ตลอด
+ * เผื่อไว้เยอะเพราะโมเดลกิน token ไปกับ thinking ก่อนตอบ
+ * ถ้าตั้งต่ำเกินจะได้ status = incomplete แล้วบอทตอบ default ตลอด
  */
 export const GEMINI_MAX_OUTPUT_TOKENS = 2048;
+
+/**
+ * false = ไม่ให้ Google เก็บบทสนทนาไว้ฝั่งเซิร์ฟเวอร์
+ * ค่าเริ่มต้นของ Interactions API คือเก็บ (55 วันสำหรับบัญชีเสียเงิน / 1 วันสำหรับบัญชีฟรี)
+ * ร้านนี้คุยกับลูกค้าจริง จึงปิดทิ้ง เราไม่ได้ใช้ previous_interaction_id หรือ background อยู่แล้ว
+ */
+export const GEMINI_STORE = false;
 
 // ── timeout / cache ──────────────────────────────────────────
 /** ดึง CSV จาก Sheet ไม่เกิน 5 วิ */
