@@ -3,7 +3,7 @@
  */
 
 import { messagingApi, validateSignature } from '@line/bot-sdk';
-import { getDefaultReply } from '@/lib/config';
+import { GEMINI_MODEL, getDefaultReply } from '@/lib/config';
 import { askGemini } from '@/lib/gemini';
 import { getFaqCsv } from '@/lib/sheet';
 
@@ -113,7 +113,16 @@ export async function POST(req: Request) {
   return new Response('OK', { status: 200 });
 }
 
-/** ไว้เปิดในเบราว์เซอร์เช็กว่า route ขึ้นจริง — ไม่คืนค่า secret ใด ๆ */
+/**
+ * ไว้เปิดในเบราว์เซอร์เช็กว่า route ขึ้นจริง และ deploy ถึง commit ไหนแล้ว
+ * commit / model ไม่ใช่ความลับ ไม่มีค่า env ใด ๆ ออกมาจากตรงนี้
+ */
 export function GET() {
-  return Response.json({ ok: true, route: 'line-webhook' });
+  return Response.json({
+    ok: true,
+    route: 'line-webhook',
+    // Vercel ใส่ค่านี้ให้เอง ใช้ยืนยันว่า production รันโค้ดเวอร์ชันไหนอยู่
+    commit: process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 7) ?? 'local',
+    model: GEMINI_MODEL,
+  });
 }
